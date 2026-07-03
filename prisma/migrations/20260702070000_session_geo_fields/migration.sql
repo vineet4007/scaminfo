@@ -1,0 +1,6 @@
+ALTER TABLE "Session" ADD COLUMN "countryCode" TEXT;
+ALTER TABLE "Session" ADD COLUMN "postalCode" TEXT;
+ALTER TABLE "Session" ADD COLUMN "latitude" DOUBLE PRECISION;
+ALTER TABLE "Session" ADD COLUMN "longitude" DOUBLE PRECISION;
+ALTER TABLE "Session" ADD COLUMN "organization" TEXT;
+ALTER TABLE "Session" ADD COLUMN "asn" TEXT;

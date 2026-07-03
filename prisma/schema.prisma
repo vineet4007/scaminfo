@@ -1,0 +1,154 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres:postgres@localhost:5432/scaminfo?schema=public"
+}
+
+enum DeviceType {
+  DESKTOP
+  MOBILE
+  TABLET
+  BOT
+  UNKNOWN
+}
+
+enum EventType {
+  PAGE_LOAD
+  PAGE_VIEW
+  CLICK
+  SCROLL
+  COPY
+  DOWNLOAD
+  EXIT
+}
+
+model Visitor {
+
+  id              String    @id @default(cuid())
+
+  visitorId       String    @unique
+
+  firstSeen       DateTime  @default(now())
+
+  lastSeen        DateTime
+
+  totalSessions   Int       @default(1)
+
+  createdAt       DateTime  @default(now())
+
+  updatedAt       DateTime  @updatedAt
+
+  sessions        Session[]
+
+}
+
+model Session {
+
+  id               String      @id @default(cuid())
+
+  visitorId        String
+
+  ip               String?
+
+  browser          String?
+
+  browserVersion   String?
+
+  os               String?
+
+  osVersion        String?
+
+  deviceType       DeviceType
+
+  language         String?
+
+  timezone         String?
+
+  country          String?
+
+  countryCode      String?
+
+  region           String?
+
+  city             String?
+
+  postalCode       String?
+
+  latitude         Float?
+
+  longitude        Float?
+
+  isp              String?
+
+  organization     String?
+
+  asn              String?
+
+  vpn              Boolean     @default(false)
+
+  proxy            Boolean     @default(false)
+
+  tor              Boolean     @default(false)
+
+  screenWidth      Int?
+
+  screenHeight     Int?
+
+  viewportWidth    Int?
+
+  viewportHeight   Int?
+
+  userAgent        String?
+
+  startedAt        DateTime    @default(now())
+
+  endedAt          DateTime?
+
+  visitor          Visitor     @relation(fields:[visitorId],references:[visitorId])
+
+  pageViews        PageView[]
+
+  events           Event[]
+
+}
+
+model PageView {
+
+  id             String      @id @default(cuid())
+
+  sessionId      String
+
+  path           String
+
+  title          String?
+
+  referrer       String?
+
+  duration       Int?
+
+  scrollDepth    Int?
+
+  createdAt      DateTime    @default(now())
+
+  session        Session      @relation(fields:[sessionId],references:[id])
+
+}
+
+model Event {
+
+  id             String      @id @default(cuid())
+
+  sessionId      String
+
+  eventType      EventType
+
+  metadata       Json?
+
+  createdAt      DateTime    @default(now())
+
+  session        Session      @relation(fields:[sessionId],references:[id])
+
+}
