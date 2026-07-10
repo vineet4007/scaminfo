@@ -57,6 +57,11 @@ type CommunityReputation = {
   }>;
 };
 
+type SearchProviderResult = {
+  provider: string;
+  results: CommunityResult[];
+};
+
 export type UrlVerificationResult = {
   input: string;
   normalizedUrl: string;
@@ -133,6 +138,264 @@ function getRootDomain(hostname: string) {
 
 function getDomainLabel(rootDomain: string) {
   return rootDomain.split(".")[0]?.replace(/[-_]+/g, " ").trim() || rootDomain;
+}
+
+function buildCommunityQuery(rootDomain: string, hostname: string) {
+  const domainLabel = getDomainLabel(rootDomain);
+
+  return unique([rootDomain, hostname, domainLabel, `${domainLabel} scam`, `${domainLabel} review`, `${rootDomain} reddit`, `${rootDomain} quora`], 8).join(" ");
+}
+
+function buildCommunitySearchLinks(query: string, rootDomain: string) {
+  const encodedQuery = encodeURIComponent(query);
+  const quoraQuery = encodeURIComponent(`site:quora.com ${rootDomain} review`);
+
+  return [
+    { label: "Search Reddit", url: `https://www.reddit.com/search/?q=${encodedQuery}` },
+    { label: "Search web", url: `https://duckduckgo.com/?q=${encodedQuery}` },
+    { label: "Search Quora", url: `https://www.google.com/search?q=${quoraQuery}` },
+  ];
+}
+
+function findMatchedTerms(text: string) {
+  const lowerText = text.toLowerCase();
+  const terms = ["scam", "fraud", "fake", "phish", "phishing", "ripoff", "complaint", "warning", "avoid", "suspicious", "not legit", "stay away", "chargeback", "stolen", "refund"];
+
+  return terms.filter((term) => lowerText.includes(term));
+}
+
+function normalizeResultUrl(url?: string, fallback?: string) {
+  const candidate = url ?? fallback;
+
+  if (!candidate) {
+    return undefined;
+  }
+
+  try {
+    return new URL(candidate).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function dedupeCommunityResults(results: CommunityResult[]) {
+  const seen = new Set<string>();
+
+  return results.filter((result) => {
+    const key = result.url.toLowerCase();
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+async function getRedditCommunityResults(query: string): Promise<SearchProviderResult> {
+  try {
+    const response = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=all&limit=8&include_over_18=on&raw_json=1`, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "ScamInfo URL verifier (+https://scaminfo.local)",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) {
+      return { provider: "reddit", results: [] };
+    }
+
+    const data = (await response.json()) as {
+      data?: {
+        children?: Array<{
+          data?: {
+            title?: string;
+            selftext?: string;
+            subreddit_name_prefixed?: string;
+            permalink?: string;
+            url?: string;
+            score?: number;
+            created_utc?: number;
+          };
+        }>;
+      };
+    };
+
+    const results =
+      data.data?.children
+        ?.map((child) => {
+          const post = child.data;
+
+          if (!post) {
+            return undefined;
+          }
+
+          const title = post.title?.trim();
+          const snippet = [post.title, post.selftext].filter(Boolean).join(" · ").trim();
+          const matchedTerms = findMatchedTerms(`${post.title ?? ""} ${post.selftext ?? ""} ${post.subreddit_name_prefixed ?? ""}`);
+          const url = normalizeResultUrl(post.url, post.permalink ? `https://www.reddit.com${post.permalink}` : undefined);
+
+          if (!title || !url) {
+            return undefined;
+          }
+
+          return {
+            source: "reddit" as const,
+            provider: "Reddit search",
+            title,
+            url,
+            snippet: snippet || undefined,
+            community: post.subreddit_name_prefixed,
+            score: post.score,
+            postedAt: post.created_utc ? new Date(post.created_utc * 1000).toISOString() : undefined,
+            matchedTerms,
+          } as CommunityResult;
+        })
+        .filter((result): result is CommunityResult => Boolean(result)) ?? [];
+
+    return { provider: "reddit", results: dedupeCommunityResults(results).slice(0, 5) };
+  } catch {
+    return { provider: "reddit", results: [] };
+  }
+}
+
+async function getBraveCommunityResults(query: string): Promise<SearchProviderResult | null> {
+  const apiKey = process.env.BRAVE_SEARCH_API_KEY?.trim();
+
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8&search_lang=en`, {
+      headers: {
+        accept: "application/json",
+        "x-subscription-token": apiKey,
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) {
+      return { provider: "brave", results: [] };
+    }
+
+    const data = (await response.json()) as {
+      web?: {
+        results?: Array<{
+          title?: string;
+          url?: string;
+          description?: string;
+        }>;
+      };
+    };
+
+    const results =
+      data.web?.results
+        ?.map((item) => {
+          const url = normalizeResultUrl(item.url);
+          const title = item.title?.trim();
+          const snippet = item.description?.trim();
+
+          if (!title || !url) {
+            return undefined;
+          }
+
+          const matchedTerms = findMatchedTerms(`${title} ${snippet ?? ""}`);
+
+          return {
+            source: "web" as const,
+            provider: "Brave Search",
+            title,
+            url,
+            snippet: snippet || undefined,
+            score: matchedTerms.length > 0 ? matchedTerms.length : undefined,
+            matchedTerms,
+          } as CommunityResult;
+        })
+        .filter((result): result is CommunityResult => Boolean(result)) ?? [];
+
+    return { provider: "brave", results: dedupeCommunityResults(results).slice(0, 5) };
+  } catch {
+    return { provider: "brave", results: [] };
+  }
+}
+
+async function getSerpApiCommunityResults(query: string): Promise<SearchProviderResult | null> {
+  const apiKey = process.env.SERPAPI_KEY?.trim();
+
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(query)}&num=8&api_key=${encodeURIComponent(apiKey)}`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) {
+      return { provider: "serpapi", results: [] };
+    }
+
+    const data = (await response.json()) as {
+      organic_results?: Array<{
+        title?: string;
+        link?: string;
+        snippet?: string;
+      }>;
+    };
+
+    const results =
+      data.organic_results
+        ?.map((item) => {
+          const url = normalizeResultUrl(item.link);
+          const title = item.title?.trim();
+          const snippet = item.snippet?.trim();
+
+          if (!title || !url) {
+            return undefined;
+          }
+
+          const matchedTerms = findMatchedTerms(`${title} ${snippet ?? ""}`);
+
+          return {
+            source: "web" as const,
+            provider: "SerpAPI",
+            title,
+            url,
+            snippet: snippet || undefined,
+            score: matchedTerms.length > 0 ? matchedTerms.length : undefined,
+            matchedTerms,
+          } as CommunityResult;
+        })
+        .filter((result): result is CommunityResult => Boolean(result)) ?? [];
+
+    return { provider: "serpapi", results: dedupeCommunityResults(results).slice(0, 5) };
+  } catch {
+    return { provider: "serpapi", results: [] };
+  }
+}
+
+async function getCommunityReputation(url: URL): Promise<CommunityReputation> {
+  const rootDomain = getRootDomain(url.hostname);
+  const query = buildCommunityQuery(rootDomain, url.hostname);
+  const searchLinks = buildCommunitySearchLinks(query, rootDomain);
+  const searches = await Promise.all([getRedditCommunityResults(query), getBraveCommunityResults(query), getSerpApiCommunityResults(query)]);
+  const activeSearches = searches.filter(Boolean) as SearchProviderResult[];
+  const results = dedupeCommunityResults(activeSearches.flatMap((search) => search.results));
+  const automatedSources = unique(activeSearches.map((search) => search.provider));
+  const riskMentions = results.reduce((count, result) => count + result.matchedTerms.length, 0);
+
+  return {
+    searched: true,
+    automatedSources,
+    query,
+    riskMentions,
+    results,
+    searchLinks,
+  };
 }
 
 function daysBetween(start?: string, end = new Date()) {
@@ -511,6 +774,37 @@ function scoreSignals(result: Omit<UrlVerificationResult, "riskScore" | "verdict
     signals.push({ label: "Website content", status: "warn", detail: "Homepage content could not be fetched for identity checks." });
   }
 
+  if (result.community.results.length > 0) {
+    const communityPenalty = Math.min(24, result.community.riskMentions * 4);
+
+    if (communityPenalty > 0) {
+      riskScore += communityPenalty;
+      signals.push({
+        label: "Community reputation",
+        status: communityPenalty >= 12 ? "fail" : "warn",
+        detail: `Automated community search found ${result.community.riskMentions} risk-related mention(s) across ${result.community.results.length} result(s).`,
+      });
+    } else {
+      signals.push({
+        label: "Community reputation",
+        status: "pass",
+        detail: `Automated community search found ${result.community.results.length} result(s) without obvious scam or complaint keywords.`,
+      });
+    }
+
+    signals.push({
+      label: "Community sources",
+      status: "info",
+      detail: `Automated checks ran through ${result.community.automatedSources.join(", ")}.`,
+    });
+  } else {
+    signals.push({
+      label: "Community reputation",
+      status: "info",
+      detail: "No clear community results were found automatically; manual Reddit, web, and Quora search links are still provided.",
+    });
+  }
+
   const registrantContacts = result.whois.contacts.filter((contact) => !contact.roles.includes("registrar"));
 
   if (registrantContacts.some((contact) => contact.email || contact.phone || contact.address)) {
@@ -540,7 +834,13 @@ export async function verifyUrl(input: string): Promise<UrlVerificationResult> {
   const url = normalizeUrl(input);
   const hostname = url.hostname.toLowerCase();
   const rootDomain = getRootDomain(hostname);
-  const [dns, https, rdap, siteIdentity] = await Promise.all([getDns(hostname), getHttps(hostname), getRdap(rootDomain), getWebsiteIdentity(url)]);
+  const [dns, https, rdap, siteIdentity, community] = await Promise.all([
+    getDns(hostname),
+    getHttps(hostname),
+    getRdap(rootDomain),
+    getWebsiteIdentity(url),
+    getCommunityReputation(url),
+  ]);
   const createdAt = extractEvent(rdap, "registration") ?? extractEvent(rdap, "registered");
   const updatedAt = extractEvent(rdap, "last changed") ?? extractEvent(rdap, "last update");
   const expiresAt = extractEvent(rdap, "expiration") ?? extractEvent(rdap, "expiry");
@@ -565,6 +865,7 @@ export async function verifyUrl(input: string): Promise<UrlVerificationResult> {
       contacts: extractRdapContacts(rdap),
     },
     siteIdentity,
+    community,
   };
   const scored = scoreSignals(base);
 
