@@ -46,7 +46,7 @@ export default async function AdminLoginPage({ searchParams }: { searchParams?: 
             Sign in
           </button>
           <p className="mt-4 text-xs leading-5 text-slate-500">
-            Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET in production. Local development uses password admin when ADMIN_PASSWORD is not set.
+            {/* Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET in production. Local development uses password admin when ADMIN_PASSWORD is not set. */}
           </p>
         </form>
       </section>
