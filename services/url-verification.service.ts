@@ -31,6 +31,18 @@ type WebsiteIdentity = {
   addresses: string[];
   contactLinks: string[];
   socialLinks: string[];
+  scannedUrls: string[];
+  pages: Array<{
+    url: string;
+    kind: "home" | "contact" | "about" | "policy";
+    fetched: boolean;
+    status?: number;
+    title?: string;
+    emails: string[];
+    phones: string[];
+    addresses: string[];
+    error?: string;
+  }>;
 };
 
 type CommunityResult = {
@@ -59,7 +71,22 @@ type CommunityReputation = {
 
 type SearchProviderResult = {
   provider: string;
+  available: boolean;
   results: CommunityResult[];
+};
+
+type ReputationProviderResult = {
+  provider: "Google Safe Browsing" | "VirusTotal" | "urlscan.io";
+  status: "match" | "clear" | "unknown" | "not_configured" | "error";
+  detail: string;
+  matchedThreats: string[];
+  url?: string;
+};
+
+type ReputationChecks = {
+  checked: boolean;
+  matches: number;
+  providers: ReputationProviderResult[];
 };
 
 export type UrlVerificationResult = {
@@ -105,6 +132,7 @@ export type UrlVerificationResult = {
   };
   siteIdentity: WebsiteIdentity;
   community: CommunityReputation;
+  reputation: ReputationChecks;
 };
 
 function normalizeUrl(input: string) {
@@ -204,7 +232,7 @@ async function getRedditCommunityResults(query: string): Promise<SearchProviderR
     });
 
     if (!response.ok) {
-      return { provider: "reddit", results: [] };
+      return { provider: "reddit", available: false, results: [] };
     }
 
     const data = (await response.json()) as {
@@ -235,7 +263,7 @@ async function getRedditCommunityResults(query: string): Promise<SearchProviderR
           const title = post.title?.trim();
           const snippet = [post.title, post.selftext].filter(Boolean).join(" · ").trim();
           const matchedTerms = findMatchedTerms(`${post.title ?? ""} ${post.selftext ?? ""} ${post.subreddit_name_prefixed ?? ""}`);
-          const url = normalizeResultUrl(post.url, post.permalink ? `https://www.reddit.com${post.permalink}` : undefined);
+          const url = normalizeResultUrl(post.permalink ? `https://www.reddit.com${post.permalink}` : undefined, post.url);
 
           if (!title || !url) {
             return undefined;
@@ -255,9 +283,9 @@ async function getRedditCommunityResults(query: string): Promise<SearchProviderR
         })
         .filter((result): result is CommunityResult => Boolean(result)) ?? [];
 
-    return { provider: "reddit", results: dedupeCommunityResults(results).slice(0, 5) };
+    return { provider: "reddit", available: true, results: dedupeCommunityResults(results).slice(0, 5) };
   } catch {
-    return { provider: "reddit", results: [] };
+    return { provider: "reddit", available: false, results: [] };
   }
 }
 
@@ -278,7 +306,7 @@ async function getBraveCommunityResults(query: string): Promise<SearchProviderRe
     });
 
     if (!response.ok) {
-      return { provider: "brave", results: [] };
+      return { provider: "brave", available: false, results: [] };
     }
 
     const data = (await response.json()) as {
@@ -316,9 +344,9 @@ async function getBraveCommunityResults(query: string): Promise<SearchProviderRe
         })
         .filter((result): result is CommunityResult => Boolean(result)) ?? [];
 
-    return { provider: "brave", results: dedupeCommunityResults(results).slice(0, 5) };
+    return { provider: "brave", available: true, results: dedupeCommunityResults(results).slice(0, 5) };
   } catch {
-    return { provider: "brave", results: [] };
+    return { provider: "brave", available: false, results: [] };
   }
 }
 
@@ -336,7 +364,7 @@ async function getSerpApiCommunityResults(query: string): Promise<SearchProvider
     });
 
     if (!response.ok) {
-      return { provider: "serpapi", results: [] };
+      return { provider: "serpapi", available: false, results: [] };
     }
 
     const data = (await response.json()) as {
@@ -372,9 +400,9 @@ async function getSerpApiCommunityResults(query: string): Promise<SearchProvider
         })
         .filter((result): result is CommunityResult => Boolean(result)) ?? [];
 
-    return { provider: "serpapi", results: dedupeCommunityResults(results).slice(0, 5) };
+    return { provider: "serpapi", available: true, results: dedupeCommunityResults(results).slice(0, 5) };
   } catch {
-    return { provider: "serpapi", results: [] };
+    return { provider: "serpapi", available: false, results: [] };
   }
 }
 
@@ -385,11 +413,11 @@ async function getCommunityReputation(url: URL): Promise<CommunityReputation> {
   const searches = await Promise.all([getRedditCommunityResults(query), getBraveCommunityResults(query), getSerpApiCommunityResults(query)]);
   const activeSearches = searches.filter(Boolean) as SearchProviderResult[];
   const results = dedupeCommunityResults(activeSearches.flatMap((search) => search.results));
-  const automatedSources = unique(activeSearches.map((search) => search.provider));
-  const riskMentions = results.reduce((count, result) => count + result.matchedTerms.length, 0);
+  const automatedSources = unique(activeSearches.filter((search) => search.available).map((search) => search.provider));
+  const riskMentions = results.filter((result) => result.matchedTerms.length > 0).length;
 
   return {
-    searched: true,
+    searched: automatedSources.length > 0,
     automatedSources,
     query,
     riskMentions,
@@ -572,7 +600,52 @@ function extractAddresses(text: string) {
   return unique(addressMatches, 5);
 }
 
-function analyzeWebsiteIdentity(html: string, response: Response): WebsiteIdentity {
+function classifyIdentityPage(url: string): "home" | "contact" | "about" | "policy" {
+  if (/(contact|support|help)/i.test(url)) {
+    return "contact";
+  }
+
+  if (/(about|company|team)/i.test(url)) {
+    return "about";
+  }
+
+  if (/(privacy|terms|conditions|refund|return-policy|returns)/i.test(url)) {
+    return "policy";
+  }
+
+  return "home";
+}
+
+function emptyWebsiteIdentity(url?: string, kind: "home" | "contact" | "about" | "policy" = "home", error?: string): WebsiteIdentity {
+  return {
+    fetched: false,
+    hasContactPage: false,
+    hasAboutPage: false,
+    hasPrivacyPolicy: false,
+    hasTermsPage: false,
+    emails: [],
+    phones: [],
+    addresses: [],
+    contactLinks: [],
+    socialLinks: [],
+    scannedUrls: url ? [url] : [],
+    pages: url
+      ? [
+          {
+            url,
+            kind,
+            fetched: false,
+            emails: [],
+            phones: [],
+            addresses: [],
+            error,
+          },
+        ]
+      : [],
+  };
+}
+
+function analyzeWebsiteIdentity(html: string, response: Response, kind: "home" | "contact" | "about" | "policy" = "home"): WebsiteIdentity {
   const text = htmlToText(html);
   const links = extractLinks(html, response.url);
   const title = decodeHtmlEntities(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ?? "");
@@ -600,19 +673,107 @@ function analyzeWebsiteIdentity(html: string, response: Response): WebsiteIdenti
     status: response.status,
     finalUrl: response.url,
     title: title || undefined,
-    hasContactPage: contactLinks.some((link) => /(contact|support|help)/i.test(link)),
-    hasAboutPage: contactLinks.some((link) => /(about|company|team)/i.test(link)),
-    hasPrivacyPolicy: links.some((link) => /privacy/i.test(link)),
-    hasTermsPage: links.some((link) => /(terms|conditions|refund|return-policy)/i.test(link)),
+    hasContactPage: kind === "contact" || contactLinks.some((link) => /(contact|support|help)/i.test(link)),
+    hasAboutPage: kind === "about" || contactLinks.some((link) => /(about|company|team)/i.test(link)),
+    hasPrivacyPolicy: /privacy/i.test(response.url) || links.some((link) => /privacy/i.test(link)),
+    hasTermsPage: /(terms|conditions|refund|return-policy|returns)/i.test(response.url) || links.some((link) => /(terms|conditions|refund|return-policy|returns)/i.test(link)),
     emails,
     phones,
     addresses: extractAddresses(text),
     contactLinks: unique(contactLinks, 8),
     socialLinks: unique(socialLinks, 8),
+    scannedUrls: [response.url],
+    pages: [
+      {
+        url: response.url,
+        kind,
+        fetched: true,
+        status: response.status,
+        title: title || undefined,
+        emails,
+        phones,
+        addresses: extractAddresses(text),
+      },
+    ],
   };
 }
 
-async function getWebsiteIdentity(url: URL): Promise<WebsiteIdentity> {
+function mergeWebsiteIdentities(identities: WebsiteIdentity[]): WebsiteIdentity {
+  const fetchedPages = identities.flatMap((identity) => identity.pages).filter((page) => page.fetched);
+  const firstFetched = identities.find((identity) => identity.fetched);
+
+  return {
+    fetched: identities.some((identity) => identity.fetched),
+    status: firstFetched?.status,
+    finalUrl: firstFetched?.finalUrl,
+    title: firstFetched?.title,
+    hasContactPage: identities.some((identity) => identity.hasContactPage),
+    hasAboutPage: identities.some((identity) => identity.hasAboutPage),
+    hasPrivacyPolicy: identities.some((identity) => identity.hasPrivacyPolicy),
+    hasTermsPage: identities.some((identity) => identity.hasTermsPage),
+    emails: unique(identities.flatMap((identity) => identity.emails), 12),
+    phones: unique(identities.flatMap((identity) => identity.phones), 12),
+    addresses: unique(identities.flatMap((identity) => identity.addresses), 8),
+    contactLinks: unique(identities.flatMap((identity) => identity.contactLinks), 12),
+    socialLinks: unique(identities.flatMap((identity) => identity.socialLinks), 12),
+    scannedUrls: unique(identities.flatMap((identity) => identity.scannedUrls), 12),
+    pages: identities.flatMap((identity) => identity.pages).slice(0, 12),
+  };
+}
+
+function buildIdentityCrawlTargets(baseUrl: URL, homepageHtml: string, responseUrl: string) {
+  const homepageLinks = extractLinks(homepageHtml, responseUrl);
+  const sameOriginLinks = homepageLinks
+    .map((link) => {
+      try {
+        return new URL(link);
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((link): link is URL => link !== undefined && link.origin === baseUrl.origin);
+  const pathTargets = [
+    "/contact",
+    "/contact-us",
+    "/support",
+    "/help",
+    "/about",
+    "/about-us",
+    "/company",
+    "/privacy",
+    "/privacy-policy",
+    "/terms",
+    "/terms-and-conditions",
+    "/refund",
+    "/refund-policy",
+    "/returns",
+    "/return-policy",
+  ].map((path) => new URL(path, baseUrl.origin));
+  const linkedTargets = sameOriginLinks.filter((link) => /(contact|support|help|about|company|team|privacy|terms|conditions|refund|return-policy|returns)/i.test(link.pathname));
+  const targets = [...linkedTargets, ...pathTargets]
+    .map((target) => {
+      target.hash = "";
+      target.search = "";
+      return target;
+    })
+    .filter((target) => target.toString() !== responseUrl);
+  const seen = new Set<string>();
+
+  return targets
+    .filter((target) => {
+      const key = target.toString().toLowerCase();
+
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+async function fetchIdentityPage(url: URL, kind: "home" | "contact" | "about" | "policy"): Promise<{ identity: WebsiteIdentity; html?: string }> {
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
@@ -626,38 +787,38 @@ async function getWebsiteIdentity(url: URL): Promise<WebsiteIdentity> {
     const contentType = response.headers.get("content-type") ?? "";
 
     if (!contentType.includes("text/html")) {
+      const identity = emptyWebsiteIdentity(response.url, kind);
+
       return {
-        fetched: true,
+        identity: {
+          ...identity,
+          fetched: true,
         status: response.status,
         finalUrl: response.url,
-        hasContactPage: false,
-        hasAboutPage: false,
-        hasPrivacyPolicy: false,
-        hasTermsPage: false,
-        emails: [],
-        phones: [],
-        addresses: [],
-        contactLinks: [],
-        socialLinks: [],
+          scannedUrls: [response.url],
+          pages: identity.pages.map((page) => ({ ...page, fetched: true, status: response.status })),
+        },
       };
     }
 
     const html = await response.text();
-    return analyzeWebsiteIdentity(html.slice(0, 1_000_000), response);
+    return { identity: analyzeWebsiteIdentity(html.slice(0, 1_000_000), response, kind), html };
   } catch {
-    return {
-      fetched: false,
-      hasContactPage: false,
-      hasAboutPage: false,
-      hasPrivacyPolicy: false,
-      hasTermsPage: false,
-      emails: [],
-      phones: [],
-      addresses: [],
-      contactLinks: [],
-      socialLinks: [],
-    };
+    return { identity: emptyWebsiteIdentity(url.toString(), kind, "Could not fetch page") };
   }
+}
+
+async function getWebsiteIdentity(url: URL): Promise<WebsiteIdentity> {
+  const homepage = await fetchIdentityPage(url, "home");
+
+  if (!homepage.html) {
+    return homepage.identity;
+  }
+
+  const crawlTargets = buildIdentityCrawlTargets(url, homepage.html, homepage.identity.finalUrl ?? url.toString());
+  const crawledPages = await Promise.all(crawlTargets.map((target) => fetchIdentityPage(target, classifyIdentityPage(target.toString()))));
+
+  return mergeWebsiteIdentities([homepage.identity, ...crawledPages.map((page) => page.identity)]);
 }
 
 async function getRdap(rootDomain: string) {
@@ -775,20 +936,25 @@ function scoreSignals(result: Omit<UrlVerificationResult, "riskScore" | "verdict
   }
 
   if (result.community.results.length > 0) {
-    const communityPenalty = Math.min(24, result.community.riskMentions * 4);
-
-    if (communityPenalty > 0) {
-      riskScore += communityPenalty;
+    if (result.community.riskMentions >= 3) {
+      riskScore += 35;
       signals.push({
         label: "Community reputation",
-        status: communityPenalty >= 12 ? "fail" : "warn",
+        status: "fail",
         detail: `Automated community search found ${result.community.riskMentions} risk-related mention(s) across ${result.community.results.length} result(s).`,
+      });
+    } else if (result.community.riskMentions > 0) {
+      riskScore += 22;
+      signals.push({
+        label: "Community reputation",
+        status: "warn",
+        detail: `Automated community search found ${result.community.riskMentions} risk-related mention(s). Open the linked Reddit/search results and review manually.`,
       });
     } else {
       signals.push({
         label: "Community reputation",
-        status: "pass",
-        detail: `Automated community search found ${result.community.results.length} result(s) without obvious scam or complaint keywords.`,
+        status: "info",
+        detail: `Automated community search found ${result.community.results.length} result(s) without obvious scam or complaint keywords. Absence of reports is not proof of safety.`,
       });
     }
 
@@ -866,6 +1032,11 @@ export async function verifyUrl(input: string): Promise<UrlVerificationResult> {
     },
     siteIdentity,
     community,
+    reputation: {
+      checked: false,
+      matches: 0,
+      providers: [],
+    },
   };
   const scored = scoreSignals(base);
 

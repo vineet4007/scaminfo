@@ -65,7 +65,7 @@ export function VerifyUrlForm() {
           </button>
         </div>
         <p className="mt-4 text-sm leading-6 text-slate-600">
-          The tool checks DNS, HTTPS, domain age, registrar data, nameservers, public contact details, policies, and suspicious hostname patterns.
+          The tool checks DNS, HTTPS, WHOIS/RDAP registration data, public website content, community reports, and suspicious hostname patterns.
         </p>
         {error ? <p className="mt-4 rounded-md bg-rose-50 p-3 text-sm font-semibold text-rose-700">{error}</p> : null}
       </form>
@@ -86,11 +86,11 @@ export function VerifyUrlForm() {
 
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
-                <span className="block font-bold text-slate-950">Domain age</span>
+                <span className="block font-bold text-slate-950">Domain age (WHOIS/RDAP)</span>
                 {result.whois.domainAgeDays !== undefined ? `${result.whois.domainAgeDays} days` : "Unknown"}
               </p>
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
-                <span className="block font-bold text-slate-950">Registrar</span>
+                <span className="block font-bold text-slate-950">Registrar (WHOIS/RDAP)</span>
                 {result.whois.registrar ?? "Unknown"}
               </p>
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
@@ -100,6 +100,26 @@ export function VerifyUrlForm() {
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
                 <span className="block font-bold text-slate-950">DNS records</span>
                 {result.dns.hasDns ? `${result.dns.records.length + result.dns.addresses.length} found` : "None found"}
+              </p>
+            </div>
+
+            <div className="mt-6 rounded-lg border border-sky-200 bg-sky-50 p-4">
+              <h3 className="text-base font-black text-slate-950">Where this data comes from</h3>
+              <div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700">
+                <p><span className="font-bold text-slate-950">WHOIS/RDAP:</span> Registration dates, registrar, nameservers, DNSSEC, and any public registration contacts are requested from the public RDAP service at rdap.org.</p>
+                <p><span className="font-bold text-slate-950">DNS and HTTPS:</span> DNS records are resolved by the server, and the submitted website is contacted directly to test HTTPS reachability and response status.</p>
+                <p><span className="font-bold text-slate-950">Website identity:</span> Public contact, about, privacy, terms, and refund pages on the submitted website are scanned for visible identity and policy information.</p>
+                <p><span className="font-bold text-slate-950">Community reputation:</span> Available Reddit and configured search-provider results are checked for complaint and risk-related terms; links are provided for manual review.</p>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950">
+              <h3 className="font-black">How the assessment is made</h3>
+              <p className="mt-2 text-sm leading-6">
+                The risk score is a rule-based estimate. It increases for signals such as a very new domain, missing DNS or HTTPS, suspicious URL patterns, limited public identity information, and risk-related community mentions. A positive or missing signal is not proof of legitimacy, and online reports may be incomplete or inaccurate.
+              </p>
+              <p className="mt-2 text-sm font-bold leading-6">
+                This result is informational only. Review the evidence and linked sources, verify important claims independently, and proceed at your own discretion.
               </p>
             </div>
 
@@ -138,6 +158,72 @@ export function VerifyUrlForm() {
               <p className="mt-3 text-xs leading-5 text-slate-500">
                 HTTPS is cheap and common now. A real business should still make its identity, support route, and policies easy to verify.
               </p>
+            </div>
+
+            <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3 className="text-base font-black text-slate-950">Community reputation</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Reddit, web review, and Quora-style searches can surface real user complaints that technical checks miss.
+                  </p>
+                </div>
+                <div className="rounded-md bg-slate-50 px-3 py-2 text-sm font-bold text-slate-950">
+                  {result.community.riskMentions} risk mention{result.community.riskMentions === 1 ? "" : "s"}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
+                  <span className="block font-bold text-slate-950">Automated sources</span>
+                  {result.community.automatedSources.length ? result.community.automatedSources.join(", ") : "Manual search only"}
+                </p>
+                <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
+                  <span className="block font-bold text-slate-950">Results found</span>
+                  {result.community.results.length}
+                </p>
+              </div>
+
+              {result.community.results.length ? (
+                <div className="mt-4 grid gap-3">
+                  {result.community.results.slice(0, 5).map((item) => (
+                    <a
+                      key={item.url}
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-md border border-slate-200 p-3 text-sm transition hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      <span className="block font-bold text-slate-950">{item.title}</span>
+                      <span className="mt-1 block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        {item.provider}{item.community ? ` / ${item.community}` : ""}
+                      </span>
+                      {item.snippet ? <span className="mt-2 line-clamp-2 block leading-6 text-slate-600">{item.snippet}</span> : null}
+                      {item.matchedTerms.length ? (
+                        <span className="mt-2 block text-xs font-bold text-rose-700">Matched: {item.matchedTerms.join(", ")}</span>
+                      ) : null}
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-600">
+                  No automated community results were returned. Use the manual searches below before trusting the site.
+                </p>
+              )}
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {result.community.searchLinks.map((link) => (
+                  <a
+                    key={link.url}
+                    href={link.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-xs font-bold text-slate-800 transition hover:bg-slate-50"
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </div>
             </div>
 
             <div className="mt-6 grid gap-3">

@@ -307,3 +307,35 @@ My recommendation
 
 
  produce a functioning application, but  gives you time to build something you can confidently present in interviews, with cleaner code, documentation, testing, and a dashboard that demonstrates real engineering rather than just feature completeness.
+
+Current Repo Status
+
+Completed
+- Core public pages are present: homepage, about, crypto scams, romance scams, dating scams, fake websites, report scam, privacy, verify, dashboard, and admin login.
+- API routes are present for analytics, dashboard, visitors, sessions, countries, browsers, OS, pages, export, verify-url, admin login, and admin logout.
+- The analytics data model exists in Prisma with Visitor, Session, PageView, and Event tables plus device and event enums.
+- The app already has supporting UI and service layers: site chrome, topic pages, verify URL form, dashboard charts, analytics tracker, analytics controller, analytics service, analytics repository, and URL verification service.
+- Basic deployment and infrastructure foundations are in place through Docker Compose, PostgreSQL, Prisma, and the existing migration history.
+- API rate limiting is applied centrally in `proxy.ts` using per-client token buckets for admin login, URL verification, analytics ingestion, and authenticated analytics reads/exports. Route handlers remain independent of rate-limit infrastructure. Rejected requests return HTTP 429 with `Retry-After` and rate-limit headers.
+
+Left To Do
+- Threat intelligence features are not implemented yet, including the threats dashboard and suspicious-behaviour insights.
+- The advanced user-behaviour module is still incomplete, especially scroll analytics, click analytics, and richer session analytics.
+- Some dashboard depth is still missing, such as maps, heat maps, and broader filtering/reporting views.
+- The public verification tool still needs stronger enrichment and reputation checks to fully match the planned feature list.
+- Documentation is incomplete, especially architecture diagrams, ER diagrams, API docs, and a full setup guide.
+- Testing is still incomplete, including unit tests, API tests, and integration tests.
+- Performance and security hardening still needs work, such as pagination, indexing, distributed rate-limit storage, and security headers.
+
+Rate limiting
+
+The default token-bucket policies are:
+
+- Admin login: burst of 5 requests, refilling at 1 token per minute.
+- URL verification: burst of 8 requests, refilling at 8 tokens per minute.
+- Analytics ingestion: burst of 120 requests, refilling at 2 tokens per second.
+- Authenticated analytics reads and exports: burst of 60 requests, refilling at 1 token per second.
+
+Limits can be changed with `RATE_LIMIT_LOGIN_CAPACITY`, `RATE_LIMIT_LOGIN_REFILL_PER_SECOND`, `RATE_LIMIT_VERIFY_CAPACITY`, `RATE_LIMIT_VERIFY_REFILL_PER_SECOND`, `RATE_LIMIT_ANALYTICS_CAPACITY`, `RATE_LIMIT_ANALYTICS_REFILL_PER_SECOND`, `RATE_LIMIT_ADMIN_READ_CAPACITY`, and `RATE_LIMIT_ADMIN_READ_REFILL_PER_SECOND`.
+
+Buckets are held in the application process and are suitable for a single running instance. A multi-instance production deployment should replace the in-memory bucket store with shared storage such as Redis so every instance enforces the same limits.
